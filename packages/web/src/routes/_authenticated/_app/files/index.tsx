@@ -45,7 +45,7 @@ export const Route = createFileRoute('/_authenticated/_app/files/')({
 
 function FilesPage() {
   const navigate = useNavigate()
-  const { parent, type, search: searchParam } = useSearch({ from: '/_authenticated/files/' })
+  const { parent, type, search: searchParam } = useSearch({ from: '/_authenticated/_app/files/' })
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())

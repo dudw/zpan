@@ -24,6 +24,11 @@ function extFromName(name: string): string {
   return dot === -1 ? '' : name.slice(dot + 1)
 }
 
+function nameWithoutExt(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? name : name.slice(0, dot)
+}
+
 const app = new Hono<Env>()
   .use(requireAuth)
   .get('/', async (c) => {
@@ -104,7 +109,7 @@ const app = new Hono<Env>()
     const rawExt = extFromName(body.name)
     const objectKey = expandFilePath(storage.filePath, {
       uid: userId,
-      rawName: body.name,
+      rawName: nameWithoutExt(body.name),
       rawExt,
       uuid: id,
     })
@@ -154,28 +159,25 @@ const app = new Hono<Env>()
     const now = new Date()
     const actualSize = head.size
 
-    const [updated] = await db.transaction(async (tx) => {
-      const result = await tx
-        .update(matters)
-        .set({ status: 'active', size: actualSize, updatedAt: now })
-        .where(eq(matters.id, id))
-        .returning()
+    const [updated] = await db
+      .update(matters)
+      .set({ status: 'active', size: actualSize, updatedAt: now })
+      .where(eq(matters.id, id))
+      .returning()
 
-      await tx
-        .update(storages)
-        .set({ usedBytes: sql`${storages.usedBytes} + ${actualSize}` })
-        .where(eq(storages.id, matter.storageId))
+    await db
+      .update(storages)
+      .set({ usedBytes: sql`${storages.usedBytes} + ${actualSize}` })
+      .where(eq(storages.id, matter.storageId))
 
-      await tx
-        .insert(storageQuotas)
-        .values({ id: nanoid(), uid: userId, quota: 0, used: actualSize })
-        .onConflictDoUpdate({
-          target: storageQuotas.uid,
-          set: { used: sql`${storageQuotas.used} + ${actualSize}` },
-        })
+    await db
+      .insert(storageQuotas)
+      .values({ id: nanoid(), uid: userId, quota: 0, used: actualSize })
+      .onConflictDoUpdate({
+        target: storageQuotas.uid,
+        set: { used: sql`${storageQuotas.used} + ${actualSize}` },
+      })
 
-      return result
-    })
 
     return c.json(updated)
   })
@@ -261,30 +263,26 @@ const app = new Hono<Env>()
 
     const now = new Date()
 
-    const [updated] = await db.transaction(async (tx) => {
-      const result = await tx
-        .update(matters)
-        .set({ status, updatedAt: now })
-        .where(eq(matters.id, id))
-        .returning()
+    const [updated] = await db
+      .update(matters)
+      .set({ status, updatedAt: now })
+      .where(eq(matters.id, id))
+      .returning()
 
-      if ((matter.dirtype ?? 0) > 0) {
-        const descendants = await collectDescendants(tx, id, userId)
-        if (descendants.length > 0) {
-          await tx
-            .update(matters)
-            .set({ status, updatedAt: now })
-            .where(
-              inArray(
-                matters.id,
-                descendants.map((d) => d.id),
-              ),
-            )
-        }
+    if ((matter.dirtype ?? 0) > 0) {
+      const descendants = await collectDescendants(db, id, userId)
+      if (descendants.length > 0) {
+        await db
+          .update(matters)
+          .set({ status, updatedAt: now })
+          .where(
+            inArray(
+              matters.id,
+              descendants.map((d) => d.id),
+            ),
+          )
       }
-
-      return result
-    })
+    }
 
     return c.json(updated)
   })
@@ -299,9 +297,7 @@ const app = new Hono<Env>()
 
     if (trashed.length === 0) return new Response(null, { status: 204 })
 
-    await db.transaction(async (tx) => {
-      await deleteMattersWithCleanup(tx, trashed, userId)
-    })
+      await deleteMattersWithCleanup(db, trashed, userId)
 
     await deleteMattersFromS3(db, trashed)
 
@@ -325,9 +321,7 @@ const app = new Hono<Env>()
     const allItems =
       (matter.dirtype ?? 0) > 0 ? [matter, ...(await collectDescendants(db, id, userId))] : [matter]
 
-    await db.transaction(async (tx) => {
-      await deleteMattersWithCleanup(tx, allItems, userId)
-    })
+      await deleteMattersWithCleanup(db, allItems, userId)
 
     await deleteMattersFromS3(db, allItems)
 
@@ -353,17 +347,16 @@ const app = new Hono<Env>()
       const status = action === 'trash' ? 'trashed' : 'active'
       const now = new Date()
 
-      await db.transaction(async (tx) => {
-        await tx
+        await db
           .update(matters)
           .set({ status, updatedAt: now })
           .where(inArray(matters.id, ownedIds))
 
         const folders = items.filter((m) => (m.dirtype ?? 0) > 0)
         for (const folder of folders) {
-          const descendants = await collectDescendants(tx, folder.id, userId)
+          const descendants = await collectDescendants(db, folder.id, userId)
           if (descendants.length > 0) {
-            await tx
+            await db
               .update(matters)
               .set({ status, updatedAt: now })
               .where(
@@ -374,7 +367,6 @@ const app = new Hono<Env>()
               )
           }
         }
-      })
 
       return c.json({ affected: items.length })
     }
@@ -393,9 +385,7 @@ const app = new Hono<Env>()
         }
       }
 
-      await db.transaction(async (tx) => {
-        await deleteMattersWithCleanup(tx, allItems, userId)
-      })
+        await deleteMattersWithCleanup(db, allItems, userId)
 
       await deleteMattersFromS3(db, allItems)
 
@@ -446,7 +436,7 @@ const app = new Hono<Env>()
       const rawExt = extFromName(matter.name)
       newObjectKey = expandFilePath(storage.filePath, {
         uid: userId,
-        rawName: matter.name,
+        rawName: nameWithoutExt(matter.name),
         rawExt,
         uuid: newId,
       })
@@ -455,16 +445,15 @@ const app = new Hono<Env>()
       await copyObject(client, storage.bucket, matter.object, newObjectKey)
     }
 
-    const [copy] = await db.transaction(async (tx) => {
-      const result = await tx
-        .insert(matters)
-        .values({
-          id: newId,
-          uid: userId,
-          alias: newAlias,
-          name: matter.name,
-          type: matter.type,
-          size: matter.size,
+    const [copy] = await db
+      .insert(matters)
+      .values({
+        id: newId,
+        uid: userId,
+        alias: newAlias,
+        name: matter.name,
+        type: matter.type,
+        size: matter.size,
           dirtype: matter.dirtype,
           parent: parent ?? '',
           object: newObjectKey,
@@ -476,12 +465,12 @@ const app = new Hono<Env>()
         .returning()
 
       if (matter.dirtype === 0 && matter.size && matter.size > 0 && storage) {
-        await tx
+        await db
           .update(storages)
           .set({ usedBytes: sql`${storages.usedBytes} + ${matter.size}` })
           .where(eq(storages.id, storage.id))
 
-        await tx
+        await db
           .insert(storageQuotas)
           .values({ id: nanoid(), uid: userId, quota: 0, used: matter.size })
           .onConflictDoUpdate({
@@ -490,8 +479,6 @@ const app = new Hono<Env>()
           })
       }
 
-      return result
-    })
 
     return c.json(copy, 201)
   })
